@@ -1,22 +1,16 @@
-#ifndef PAWN_H
-#define PAWN_H
+#ifndef KNIGHT_H
+#define KNIGHT_H
 
 #include "Piece.h"
 
 class Board; // Forward declaration
 
-class Pawn : public Piece {
+class Knight : public Piece {
 public:
-    Pawn(PieceColor color);
+    Knight(PieceColor color);
     wxString GetSymbol() const override;
     std::string GetName() const override;
     std::vector<wxPoint> GetPossibleMoves(const Board& board, wxPoint position) const override;
-    
-    void SetMoved(bool moved) { hasMoved = moved; }
-    bool HasMoved() const { return hasMoved; }
-
-private:
-    bool hasMoved = false;
 };
 
 #endif

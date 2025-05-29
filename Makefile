@@ -1,7 +1,9 @@
+SRCS = chess.cpp Board.cpp PieceFactory.cpp \
+       Pawn.cpp Rook.cpp Knight.cpp Bishop.cpp Queen.cpp King.cpp
+
 CXX = g++
-WXCONFIG = wx-config
 TARGET = chess
-SRCS = chess.cpp Board.cpp  # Removed Pawn.cpp
+WXCONFIG = wx-config
 
 CFLAGS = $(shell $(WXCONFIG) --cxxflags)
 LIBS = $(shell $(WXCONFIG) --libs)
