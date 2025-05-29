@@ -1,6 +1,8 @@
 #include "Board.h"
 #include "PieceFactory.h"
 #include "Pawn.h"
+#include "King.h"
+#include "Rook.h"
 #include <wx/dcbuffer.h>
 #include <algorithm>
 
@@ -24,14 +26,6 @@ bool Board::IsEnemy(int x, int y, PieceColor color) const {
     return board[x][y] && board[x][y]->GetColor() != color;
 }
 
-void Board::SetEnPassantTarget(wxPoint target) {
-    enPassantTarget = target;
-}
-
-bool Board::IsEnPassantTarget(int x, int y) const {
-    return enPassantTarget == wxPoint(x, y);
-}
-
 bool Board::IsValidMove(int fromX, int fromY, int toX, int toY) const {
     if (!board[fromX][fromY]) return false;
     if (board[toX][toY] && board[toX][toY]->GetColor() == board[fromX][fromY]->GetColor()) {
@@ -51,7 +45,98 @@ bool Board::IsRook(int x, int y, PieceColor color) const {
     return piece && piece->GetType() == PieceType::ROOK && piece->GetColor() == color;
 }
 
+void Board::SetKingMoved(PieceColor color) {
+    if (color == PieceColor::WHITE) whiteKingMoved = true;
+    else blackKingMoved = true;
+}
+
+void Board::SetRookMoved(int x, int y) {
+    if (y == 0) {  // Black pieces
+        if (x == 0) blackRookQMoved = true;
+        else if (x == 7) blackRookKMoved = true;
+    } else if (y == 7) {  // White pieces
+        if (x == 0) whiteRookQMoved = true;
+        else if (x == 7) whiteRookKMoved = true;
+    }
+}
+
+bool Board::CanCastleKingside(PieceColor color) const {
+    if (color == PieceColor::WHITE) 
+        return !whiteKingMoved && !whiteRookKMoved;
+    else 
+        return !blackKingMoved && !blackRookKMoved;
+}
+
+bool Board::CanCastleQueenside(PieceColor color) const {
+    if (color == PieceColor::WHITE) 
+        return !whiteKingMoved && !whiteRookQMoved;
+    else 
+        return !blackKingMoved && !blackRookQMoved;
+}
+
+bool Board::IsSquareUnderAttack(wxPoint square, PieceColor attackerColor) const {
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            Piece* piece = board[x][y].get();
+            if (piece && piece->GetColor() == attackerColor) {
+                PieceType type = piece->GetType();
+                
+                // Handle king attacks separately (adjacent squares)
+                if (type == PieceType::KING) {
+                    if (abs(square.x - x) <= 1 && abs(square.y - y) <= 1) {
+                        return true;
+                    }
+                } 
+                // Handle pawn attacks separately (different capture pattern)
+                else if (type == PieceType::PAWN) {
+                    int direction = (attackerColor == PieceColor::WHITE) ? -1 : 1;
+                    if (y + direction == square.y && 
+                        (x - 1 == square.x || x + 1 == square.x)) {
+                        return true;
+                    }
+                } 
+                // For other pieces, check if they can move to the square
+                else {
+                    auto moves = piece->GetPossibleMoves(*this, wxPoint(x, y));
+                    if (std::find(moves.begin(), moves.end(), square) != moves.end()) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool Board::IsKingInCheck(PieceColor color) const {
+    // Find king position
+    wxPoint kingPos(-1, -1);
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            if (board[x][y] && 
+                board[x][y]->GetType() == PieceType::KING && 
+                board[x][y]->GetColor() == color) {
+                kingPos = wxPoint(x, y);
+                break;
+            }
+        }
+    }
+    if (kingPos.x == -1) return false;
+
+    PieceColor attacker = (color == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
+    return IsSquareUnderAttack(kingPos, attacker);
+}
+
 void Board::InitNewGame() {
+    // Reset castling flags
+    whiteKingMoved = false;
+    blackKingMoved = false;
+    whiteRookKMoved = false;
+    whiteRookQMoved = false;
+    blackRookKMoved = false;
+    blackRookQMoved = false;
+    enPassantTarget = wxPoint(-1, -1);
+
     for (int x = 0; x < 8; ++x)
         for (int y = 0; y < 8; ++y)
             board[x][y].reset();
@@ -94,7 +179,7 @@ void Board::OnPaint(wxPaintEvent& event) {
             dc.DrawRectangle(tile);
 
             if (board[x][y]) {
-                dc.SetTextForeground(*wxBLACK);
+                dc.SetTextForeground(board[x][y]->GetColor() == PieceColor::WHITE ? *wxBLACK : *wxRED);
 
                 wxString symbol = board[x][y]->GetSymbol();
                 wxSize textSize = dc.GetTextExtent(symbol);
@@ -130,20 +215,60 @@ void Board::OnLeftDown(wxMouseEvent& event) {
             selectedPiece = wxPoint(x, y);
             possibleMoves = board[x][y]->GetPossibleMoves(*this, selectedPiece);
         }
-    } 
-    else {
-    // Second click - try to move
-    wxPoint dest(x, y);
-    auto it = std::find(possibleMoves.begin(), possibleMoves.end(), dest);
-    if (it != possibleMoves.end()) {
-        board[dest.x][dest.y] = std::move(board[selectedPiece.x][selectedPiece.y]);
-        board[selectedPiece.x][selectedPiece.y].reset();
-        currentTurn = (currentTurn == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
-    } 
+    } else {
+        // Second click - try to move
+        wxPoint dest(x, y);
+        auto it = std::find(possibleMoves.begin(), possibleMoves.end(), dest);
+        if (it != possibleMoves.end()) {
+            PieceType movedType = board[selectedPiece.x][selectedPiece.y]->GetType();
+            PieceColor movedColor = board[selectedPiece.x][selectedPiece.y]->GetColor();
+            
+            // Handle en passant capture
+            if (movedType == PieceType::PAWN && dest == enPassantTarget) {
+                int captureY = (movedColor == PieceColor::WHITE) ? dest.y + 1 : dest.y - 1;
+                board[dest.x][captureY].reset();
+            }
+            
+            // Handle castling
+            if (movedType == PieceType::KING) {
+                int deltaX = dest.x - selectedPiece.x;
+                
+                // Kingside castling (king moves 2 right)
+                if (deltaX == 2) {
+                    // Move the rook from H to F
+                    board[5][dest.y] = std::move(board[7][dest.y]);
+                    board[7][dest.y].reset();
+                    SetRookMoved(7, dest.y);
+                }
+                // Queenside castling (king moves 2 left)
+                else if (deltaX == -2) {
+                    // Move the rook from A to D
+                    board[3][dest.y] = std::move(board[0][dest.y]);
+                    board[0][dest.y].reset();
+                    SetRookMoved(0, dest.y);
+                }
+                SetKingMoved(movedColor);
+            }
+            
+            // Update rook moved status
+            if (movedType == PieceType::ROOK) {
+                SetRookMoved(selectedPiece.x, selectedPiece.y);
+            }
+            
+            // Handle pawn double move for en passant
+            if (movedType == PieceType::PAWN && abs(dest.y - selectedPiece.y) == 2) {
+                int epY = (selectedPiece.y + dest.y) / 2;
+                enPassantTarget = wxPoint(dest.x, epY);
+            } else {
+                enPassantTarget = wxPoint(-1, -1);
+            }
+            
+            // Move the piece
+            board[dest.x][dest.y] = std::move(board[selectedPiece.x][selectedPiece.y]);
+            currentTurn = (currentTurn == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
+        } 
         selectedPiece = wxPoint(-1, -1);
         possibleMoves.clear();
     }   
-
     Refresh();
-
-} 
+}

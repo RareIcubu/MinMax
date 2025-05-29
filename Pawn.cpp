@@ -31,7 +31,13 @@ std::vector<wxPoint> Pawn::GetPossibleMoves(const Board& board, wxPoint position
         int nx = position.x + dx;
         int ny = position.y + direction;
         if (nx >= 0 && nx < 8 && ny >= 0 && ny < 8) {
-            if (board.IsEnemy(nx, ny, GetColor()) || board.IsEnPassantTarget(nx, ny)) {
+            // Regular capture
+            if (board.IsEnemy(nx, ny, GetColor())) {
+                moves.push_back(wxPoint(nx, ny));
+            }
+            // En passant capture
+            else if (ny == board.GetEnPassantTarget().y && 
+                     nx == board.GetEnPassantTarget().x) {
                 moves.push_back(wxPoint(nx, ny));
             }
         }

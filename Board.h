@@ -14,11 +14,18 @@ public:
     bool IsEmpty(int x, int y) const;
     bool IsEnemy(int x, int y, PieceColor color) const;
     bool IsValidMove(int fromX, int fromY, int toX, int toY) const;
-    void SetEnPassantTarget(wxPoint target);
-    bool IsEnPassantTarget(int x, int y) const;
     bool IsInsideBoard(wxPoint p) const { return p.x >= 0 && p.x < 8 && p.y >= 0 && p.y < 8; }
     Piece* GetPieceAt(wxPoint p) const;
-    bool IsRook(int x, int y, PieceColor color) const; // Needed for castling check
+    bool IsRook(int x, int y, PieceColor color) const;
+    wxPoint GetEnPassantTarget() const { return enPassantTarget; }
+    void SetEnPassantTarget(wxPoint target) { enPassantTarget = target; }
+    bool IsEnPassantTarget(int x, int y) const { return enPassantTarget == wxPoint(x, y); }
+    bool CanCastleKingside(PieceColor color) const;
+    bool CanCastleQueenside(PieceColor color) const;
+    void SetKingMoved(PieceColor color);
+    void SetRookMoved(int x, int y);
+    bool IsSquareUnderAttack(wxPoint square, PieceColor attackerColor) const;
+    bool IsKingInCheck(PieceColor color) const;
 
 private:
     void OnPaint(wxPaintEvent& event);
@@ -31,8 +38,15 @@ private:
     std::vector<wxPoint> possibleMoves;
     wxPoint enPassantTarget = wxPoint(-1, -1);
 
+    // Castling flags
+    bool whiteKingMoved = false;
+    bool blackKingMoved = false;
+    bool whiteRookKMoved = false;
+    bool whiteRookQMoved = false;
+    bool blackRookKMoved = false;
+    bool blackRookQMoved = false;
+
     wxDECLARE_EVENT_TABLE();
 };
 
 #endif // BOARD_H
-
