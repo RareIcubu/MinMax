@@ -4,7 +4,9 @@
 #include "King.h"
 #include "Rook.h"
 #include <wx/dcbuffer.h>
+#include <wx/msgdlg.h>
 #include <algorithm>
+#include <random>
 
 wxBEGIN_EVENT_TABLE(Board, wxPanel)
     EVT_PAINT(Board::OnPaint)
@@ -29,7 +31,7 @@ bool Board::IsEnemy(int x, int y, PieceColor color) const {
 bool Board::IsValidMove(int fromX, int fromY, int toX, int toY) const {
     if (!board[fromX][fromY]) return false;
     if (board[toX][toY] && board[toX][toY]->GetColor() == board[fromX][fromY]->GetColor()) {
-        return false; // Can't capture own piece
+        return false;
     }
     return true;
 }
@@ -51,10 +53,10 @@ void Board::SetKingMoved(PieceColor color) {
 }
 
 void Board::SetRookMoved(int x, int y) {
-    if (y == 0) {  // Black pieces
+    if (y == 0) {
         if (x == 0) blackRookQMoved = true;
         else if (x == 7) blackRookKMoved = true;
-    } else if (y == 7) {  // White pieces
+    } else if (y == 7) {
         if (x == 0) whiteRookQMoved = true;
         else if (x == 7) whiteRookKMoved = true;
     }
@@ -81,13 +83,11 @@ bool Board::IsSquareUnderAttack(wxPoint square, PieceColor attackerColor) const 
             if (piece && piece->GetColor() == attackerColor) {
                 PieceType type = piece->GetType();
                 
-                // Handle king attacks separately (adjacent squares)
                 if (type == PieceType::KING) {
                     if (abs(square.x - x) <= 1 && abs(square.y - y) <= 1) {
                         return true;
                     }
                 } 
-                // Handle pawn attacks separately (different capture pattern)
                 else if (type == PieceType::PAWN) {
                     int direction = (attackerColor == PieceColor::WHITE) ? -1 : 1;
                     if (y + direction == square.y && 
@@ -95,7 +95,6 @@ bool Board::IsSquareUnderAttack(wxPoint square, PieceColor attackerColor) const 
                         return true;
                     }
                 } 
-                // For other pieces, check if they can move to the square
                 else {
                     auto moves = piece->GetPossibleMoves(*this, wxPoint(x, y));
                     if (std::find(moves.begin(), moves.end(), square) != moves.end()) {
@@ -109,26 +108,238 @@ bool Board::IsSquareUnderAttack(wxPoint square, PieceColor attackerColor) const 
 }
 
 bool Board::IsKingInCheck(PieceColor color) const {
-    // Find king position
-    wxPoint kingPos(-1, -1);
-    for (int x = 0; x < 8; x++) {
-        for (int y = 0; y < 8; y++) {
-            if (board[x][y] && 
-                board[x][y]->GetType() == PieceType::KING && 
-                board[x][y]->GetColor() == color) {
-                kingPos = wxPoint(x, y);
-                break;
-            }
-        }
-    }
-    if (kingPos.x == -1) return false;
-
+    wxPoint kingPos = GetKingPosition(color);
     PieceColor attacker = (color == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
     return IsSquareUnderAttack(kingPos, attacker);
 }
 
+wxPoint Board::GetKingPosition(PieceColor color) const {
+    return (color == PieceColor::WHITE) ? whiteKingPos : blackKingPos;
+}
+
+std::vector<wxPoint> Board::GetCheckingPieces(PieceColor color) const {
+    std::vector<wxPoint> checkers;
+    wxPoint kingPos = GetKingPosition(color);
+    PieceColor attackerColor = (color == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
+
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            Piece* piece = board[x][y].get();
+            if (piece && piece->GetColor() == attackerColor) {
+                auto moves = piece->GetPossibleMoves(*this, wxPoint(x, y));
+                if (std::find(moves.begin(), moves.end(), kingPos) != moves.end()) {
+                    checkers.push_back(wxPoint(x, y));
+                }
+            }
+        }
+    }
+    return checkers;
+}
+
+void Board::HighlightChecks(wxAutoBufferedPaintDC& dc) const {
+    if (IsKingInCheck(currentTurn)) {
+        wxPoint kingPos = GetKingPosition(currentTurn);
+        wxRect kingRect(kingPos.x * tileSize.x, kingPos.y * tileSize.y, 
+                         tileSize.x, tileSize.y);
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        dc.SetPen(wxPen(*wxRED, 4));
+        dc.DrawRectangle(kingRect);
+
+        std::vector<wxPoint> attackers = GetCheckingPieces(currentTurn);
+        for (const auto& attacker : attackers) {
+            wxRect attackerRect(attacker.x * tileSize.x, attacker.y * tileSize.y, 
+                                tileSize.x, tileSize.y);
+            dc.SetPen(wxPen(*wxRED, 3));
+            dc.DrawRectangle(attackerRect);
+        }
+    }
+}
+
+bool Board::IsCheckmate(PieceColor color) {
+    if (!IsKingInCheck(color)) return false;
+    return !HasLegalMoves(color);
+}
+
+bool Board::IsStalemate(PieceColor color) {
+    if (IsKingInCheck(color)) return false;
+    return !HasLegalMoves(color);
+}
+
+bool Board::HasLegalMoves(PieceColor color) {
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            if (board[x][y] && board[x][y]->GetColor() == color) {
+                auto moves = board[x][y]->GetPossibleMoves(*this, wxPoint(x, y));
+                for (const auto& move : moves) {
+                    if (IsMoveLegal(wxPoint(x, y), move)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool Board::IsMoveLegal(wxPoint from, wxPoint to) {
+    if (!board[from.x][from.y]) return false;
+    
+    PieceType movedType = board[from.x][from.y]->GetType();
+    PieceColor movedColor = board[from.x][from.y]->GetColor();
+    bool isEnPassant = (movedType == PieceType::PAWN && to == enPassantTarget);
+    bool isCastling = (movedType == PieceType::KING && abs(to.x - from.x) == 2);
+
+    std::unique_ptr<Piece> backup[3];
+    wxPoint originalWhiteKingPos = whiteKingPos;
+    wxPoint originalBlackKingPos = blackKingPos;
+    
+    backup[0] = std::move(board[from.x][from.y]);
+    backup[1] = std::move(board[to.x][to.y]);
+    
+    if (isEnPassant) {
+        int captureY = (movedColor == PieceColor::WHITE) ? to.y + 1 : to.y - 1;
+        backup[2] = std::move(board[to.x][captureY]);
+        board[to.x][captureY].reset();
+    } else if (isCastling) {
+        if (to.x > from.x) {
+            backup[2] = std::move(board[7][from.y]);
+            board[5][from.y] = std::move(backup[2]);
+        } else {
+            backup[2] = std::move(board[0][from.y]);
+            board[3][from.y] = std::move(backup[2]);
+        }
+    }
+
+    board[to.x][to.y] = std::move(backup[0]);
+    
+    if (movedType == PieceType::KING) {
+        if (movedColor == PieceColor::WHITE) {
+            whiteKingPos = to;
+        } else {
+            blackKingPos = to;
+        }
+    }
+    
+    bool inCheck = IsKingInCheck(movedColor);
+    
+    board[from.x][from.y] = std::move(board[to.x][to.y]);
+    board[to.x][to.y] = std::move(backup[1]);
+    
+    if (movedType == PieceType::KING) {
+        if (movedColor == PieceColor::WHITE) {
+            whiteKingPos = originalWhiteKingPos;
+        } else {
+            blackKingPos = originalBlackKingPos;
+        }
+    }
+    
+    if (isEnPassant) {
+        int captureY = (movedColor == PieceColor::WHITE) ? to.y + 1 : to.y - 1;
+        board[to.x][captureY] = std::move(backup[2]);
+    } else if (isCastling) {
+        if (to.x > from.x) {
+            board[7][from.y] = std::move(board[5][from.y]);
+            board[5][from.y].reset();
+        } else {
+            board[0][from.y] = std::move(board[3][from.y]);
+            board[3][from.y].reset();
+        }
+    }
+    
+    return !inCheck;
+}
+
+void Board::SaveState() {
+    MoveState state;
+    
+    for (int x = 0; x < 8; ++x) {
+        for (int y = 0; y < 8; ++y) {
+            if (board[x][y]) {
+                state.board[x][y] = PieceFactory::CreatePiece(
+                    board[x][y]->GetType(), 
+                    board[x][y]->GetColor()
+                );
+            }
+        }
+    }
+    
+    state.selectedPiece = selectedPiece;
+    state.currentTurn = currentTurn;
+    state.enPassantTarget = enPassantTarget;
+    state.whiteKingPos = whiteKingPos;
+    state.blackKingPos = blackKingPos;
+    state.whiteKingMoved = whiteKingMoved;
+    state.blackKingMoved = blackKingMoved;
+    state.whiteRookKMoved = whiteRookKMoved;
+    state.whiteRookQMoved = whiteRookQMoved;
+    state.blackRookKMoved = blackRookKMoved;
+    state.blackRookQMoved = blackRookQMoved;
+    
+    moveHistory.push(std::move(state));
+}
+
+void Board::RestoreState(const MoveState& state) {
+    for (int x = 0; x < 8; ++x) {
+        for (int y = 0; y < 8; ++y) {
+            if (state.board[x][y]) {
+                board[x][y] = PieceFactory::CreatePiece(
+                    state.board[x][y]->GetType(), 
+                    state.board[x][y]->GetColor()
+                );
+            } else {
+                board[x][y].reset();
+            }
+        }
+    }
+    
+    selectedPiece = state.selectedPiece;
+    currentTurn = state.currentTurn;
+    enPassantTarget = state.enPassantTarget;
+    whiteKingPos = state.whiteKingPos;
+    blackKingPos = state.blackKingPos;
+    whiteKingMoved = state.whiteKingMoved;
+    blackKingMoved = state.blackKingMoved;
+    whiteRookKMoved = state.whiteRookKMoved;
+    whiteRookQMoved = state.whiteRookQMoved;
+    blackRookKMoved = state.blackRookKMoved;
+    blackRookQMoved = state.blackRookQMoved;
+    
+    possibleMoves.clear();
+    gameOver = false;
+    gameResult = "";
+}
+
+void Board::UndoLastMove() {
+    if (moveHistory.size() <= 1) return; // Keep initial state
+    
+    moveHistory.pop(); // Remove current state
+    RestoreState(moveHistory.top());
+    Refresh();
+}
+
+void Board::ShowGameOverDialog(wxString message) {
+    gameOver = true;
+    gameResult = message;
+    wxMessageDialog dialog(this, message, "Game Over", wxOK | wxCENTRE);
+    dialog.ShowModal();
+}
+
+void Board::ResetGame() {
+    InitNewGame();
+    gameOver = false;
+    gameResult = "";
+    Refresh();
+}
+
+void Board::SetRandomColor() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(0, 1);
+    playerColor = distrib(gen) ? PieceColor::WHITE : PieceColor::BLACK;
+    ResetGame();
+}
+
 void Board::InitNewGame() {
-    // Reset castling flags
     whiteKingMoved = false;
     blackKingMoved = false;
     whiteRookKMoved = false;
@@ -136,18 +347,28 @@ void Board::InitNewGame() {
     blackRookKMoved = false;
     blackRookQMoved = false;
     enPassantTarget = wxPoint(-1, -1);
+    selectedPiece = wxPoint(-1, -1);
+    possibleMoves.clear();
+    currentTurn = PieceColor::WHITE;
+    whiteKingPos = wxPoint(4, 7);
+    blackKingPos = wxPoint(4, 0);
+    gameOver = false;
+    gameResult = "";
+    playerColor = PieceColor::WHITE;
+    
+    while (!moveHistory.empty()) {
+        moveHistory.pop();
+    }
 
     for (int x = 0; x < 8; ++x)
         for (int y = 0; y < 8; ++y)
             board[x][y].reset();
 
-    // Setup pawns
     for (int x = 0; x < 8; ++x) {
         board[x][1] = PieceFactory::CreatePiece(PieceType::PAWN, PieceColor::BLACK);
         board[x][6] = PieceFactory::CreatePiece(PieceType::PAWN, PieceColor::WHITE);
     }
 
-    // Setup back rank pieces
     PieceType backRow[8] = {
         PieceType::ROOK, PieceType::KNIGHT, PieceType::BISHOP, PieceType::QUEEN,
         PieceType::KING, PieceType::BISHOP, PieceType::KNIGHT, PieceType::ROOK
@@ -157,6 +378,8 @@ void Board::InitNewGame() {
         board[x][0] = PieceFactory::CreatePiece(backRow[x], PieceColor::BLACK);
         board[x][7] = PieceFactory::CreatePiece(backRow[x], PieceColor::WHITE);
     }
+    
+    SaveState();
 }
 
 void Board::OnPaint(wxPaintEvent& event) {
@@ -179,7 +402,7 @@ void Board::OnPaint(wxPaintEvent& event) {
             dc.DrawRectangle(tile);
 
             if (board[x][y]) {
-                dc.SetTextForeground(board[x][y]->GetColor() == PieceColor::WHITE ? *wxBLACK : *wxRED);
+                dc.SetTextForeground(*wxBLACK);
 
                 wxString symbol = board[x][y]->GetSymbol();
                 wxSize textSize = dc.GetTextExtent(symbol);
@@ -191,7 +414,6 @@ void Board::OnPaint(wxPaintEvent& event) {
         }
     }
 
-    // Draw possible moves highlights
     for (const auto& move : possibleMoves) {
         wxRect highlight(move.x * tileSize.x, move.y * tileSize.y,
                          tileSize.x, tileSize.y);
@@ -199,9 +421,22 @@ void Board::OnPaint(wxPaintEvent& event) {
         dc.SetPen(wxPen(*wxGREEN, 3));
         dc.DrawRectangle(highlight);
     }
+
+    HighlightChecks(dc);
+
+    if (gameOver) {
+        dc.SetFont(wxFont(20, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD));
+        dc.SetTextForeground(*wxBLUE);
+        wxSize textSize = dc.GetTextExtent(gameResult);
+        int textX = (size.GetWidth() - textSize.GetWidth()) / 2;
+        int textY = (size.GetHeight() - textSize.GetHeight()) / 2;
+        dc.DrawText(gameResult, textX, textY);
+    }
 }
 
 void Board::OnLeftDown(wxMouseEvent& event) {
+    if (gameOver) return;
+
     wxPoint clickPos = event.GetPosition();
     int x = clickPos.x / tileSize.x;
     int y = clickPos.y / tileSize.y;
@@ -210,52 +445,58 @@ void Board::OnLeftDown(wxMouseEvent& event) {
         return;
 
     if (selectedPiece.x == -1) {
-        // First click - select a piece
         if (board[x][y] && board[x][y]->GetColor() == currentTurn) {
             selectedPiece = wxPoint(x, y);
             possibleMoves = board[x][y]->GetPossibleMoves(*this, selectedPiece);
+            
+            std::vector<wxPoint> legalMoves;
+            for (const auto& move : possibleMoves) {
+                if (IsMoveLegal(selectedPiece, move)) {
+                    legalMoves.push_back(move);
+                }
+            }
+            possibleMoves = legalMoves;
         }
     } else {
-        // Second click - try to move
         wxPoint dest(x, y);
         auto it = std::find(possibleMoves.begin(), possibleMoves.end(), dest);
         if (it != possibleMoves.end()) {
+            SaveState();
+            
             PieceType movedType = board[selectedPiece.x][selectedPiece.y]->GetType();
             PieceColor movedColor = board[selectedPiece.x][selectedPiece.y]->GetColor();
             
-            // Handle en passant capture
             if (movedType == PieceType::PAWN && dest == enPassantTarget) {
                 int captureY = (movedColor == PieceColor::WHITE) ? dest.y + 1 : dest.y - 1;
                 board[dest.x][captureY].reset();
             }
             
-            // Handle castling
             if (movedType == PieceType::KING) {
                 int deltaX = dest.x - selectedPiece.x;
                 
-                // Kingside castling (king moves 2 right)
                 if (deltaX == 2) {
-                    // Move the rook from H to F
                     board[5][dest.y] = std::move(board[7][dest.y]);
                     board[7][dest.y].reset();
                     SetRookMoved(7, dest.y);
                 }
-                // Queenside castling (king moves 2 left)
                 else if (deltaX == -2) {
-                    // Move the rook from A to D
                     board[3][dest.y] = std::move(board[0][dest.y]);
                     board[0][dest.y].reset();
                     SetRookMoved(0, dest.y);
                 }
                 SetKingMoved(movedColor);
+                
+                if (movedColor == PieceColor::WHITE) {
+                    whiteKingPos = dest;
+                } else {
+                    blackKingPos = dest;
+                }
             }
             
-            // Update rook moved status
             if (movedType == PieceType::ROOK) {
                 SetRookMoved(selectedPiece.x, selectedPiece.y);
             }
             
-            // Handle pawn double move for en passant
             if (movedType == PieceType::PAWN && abs(dest.y - selectedPiece.y) == 2) {
                 int epY = (selectedPiece.y + dest.y) / 2;
                 enPassantTarget = wxPoint(dest.x, epY);
@@ -263,9 +504,15 @@ void Board::OnLeftDown(wxMouseEvent& event) {
                 enPassantTarget = wxPoint(-1, -1);
             }
             
-            // Move the piece
             board[dest.x][dest.y] = std::move(board[selectedPiece.x][selectedPiece.y]);
             currentTurn = (currentTurn == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
+            
+            PieceColor opponent = (movedColor == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
+            if (IsCheckmate(opponent)) {
+                ShowGameOverDialog("Checkmate! " + wxString(movedColor == PieceColor::WHITE ? "White" : "Black") + " wins!");
+            } else if (IsStalemate(opponent)) {
+                ShowGameOverDialog("Stalemate! Game drawn!");
+            }
         } 
         selectedPiece = wxPoint(-1, -1);
         possibleMoves.clear();
