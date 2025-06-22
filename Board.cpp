@@ -472,35 +472,42 @@ int Board::EvaluateMobility(PieceColor color) const {
     return mobility;
 }
 
+// Board.cpp
 int Board::EvaluateKingSafety(PieceColor color) const {
     int safety = 0;
     wxPoint kingPos = GetKingPosition(color);
     
-    // Kara za brak roszady
-    if (color == PieceColor::WHITE && !whiteKingMoved) {
-        safety -= 20;
+    // Kara za króla w centrum
+    int dx = std::abs(kingPos.x - 3.5);
+    int dy = std::abs(kingPos.y - 3.5);
+    int distFromCenter = dx + dy;
+    safety -= (5 - distFromCenter) * 10;
+    
+    // Bonus za roszadę
+    if (color == PieceColor::WHITE && whiteKingMoved) {
+        safety += 30;
     }
-    if (color == PieceColor::BLACK && !blackKingMoved) {
-        safety -= 20;
+    if (color == PieceColor::BLACK && blackKingMoved) {
+        safety += 30;
     }
     
-    // Bonus za bezpieczne pozycje króla
-    if (color == PieceColor::WHITE) {
-        if (kingPos.y == 7 && kingPos.x == 4) safety += 10;
-        if (kingPos.y == 7 && (kingPos.x == 6 || kingPos.x == 2)) safety += 5;
-    } else {
-        if (kingPos.y == 0 && kingPos.x == 4) safety += 10;
-        if (kingPos.y == 0 && (kingPos.x == 6 || kingPos.x == 2)) safety += 5;
+    // Kara za brak obrony wokół króla
+    int protection = 0;
+    for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            if (dx == 0 && dy == 0) continue;
+            wxPoint p(kingPos.x + dx, kingPos.y + dy);
+            if (IsInsideBoard(p)) {
+                if (board[p.x][p.y] && board[p.x][p.y]->GetColor() == color) {
+                    protection += 5;
+                }
+            }
+        }
     }
-    
-    // Kara za szach
-    if (IsKingInCheck(color)) {
-        safety -= 50;
-    }
+    safety += protection;
     
     return safety;
 }
-
 int Board::EvaluateCenterControl(PieceColor color) const {
     int control = 0;
     const std::vector<wxPoint> centerSquares = {{3,3}, {3,4}, {4,3}, {4,4}};
@@ -592,59 +599,51 @@ int Board::EvaluatePawnStructure(PieceColor color) const {
 int Board::EvaluateBoard() const {
     int score = EvaluateMaterial();
     
-    // Ocena mobilności
-    int mobilityWhite = EvaluateMobility(PieceColor::WHITE);
-    int mobilityBlack = EvaluateMobility(PieceColor::BLACK);
-    if (playerColor == PieceColor::WHITE) {
-        score += mobilityWhite - mobilityBlack;
-    } else {
-        score += mobilityBlack - mobilityWhite;
-    }
-    
-    // Ocena bezpieczeństwa króla
-    int kingSafetyWhite = EvaluateKingSafety(PieceColor::WHITE);
-    int kingSafetyBlack = EvaluateKingSafety(PieceColor::BLACK);
-    if (playerColor == PieceColor::WHITE) {
-        score += kingSafetyWhite - kingSafetyBlack;
-    } else {
-        score += kingSafetyBlack - kingSafetyWhite;
-    }
-    
-    // Ocena kontroli centrum
-    int centerControlWhite = EvaluateCenterControl(PieceColor::WHITE);
-    int centerControlBlack = EvaluateCenterControl(PieceColor::BLACK);
-    if (playerColor == PieceColor::WHITE) {
-        score += centerControlWhite - centerControlBlack;
-    } else {
-        score += centerControlBlack - centerControlWhite;
-    }
-    
-    // Ocena struktury pionków
-    int pawnStructureWhite = EvaluatePawnStructure(PieceColor::WHITE);
-    int pawnStructureBlack = EvaluatePawnStructure(PieceColor::BLACK);
-    if (playerColor == PieceColor::WHITE) {
-        score += pawnStructureWhite - pawnStructureBlack;
-    } else {
-        score += pawnStructureBlack - pawnStructureWhite;
-    }
-    
-    // Bonus za aktywne figury
+    // Ocena pozycyjna
     for (int x = 0; x < 8; x++) {
         for (int y = 0; y < 8; y++) {
-            if (board[x][y] && board[x][y]->GetColor() == playerColor) {
-                PieceType type = board[x][y]->GetType();
-                if (type != PieceType::PAWN && type != PieceType::KING) {
-                    if (y < 4 || y > 3) {
-                        score += 5;
-                    }
+            if (!board[x][y]) continue;
+            
+            Piece* piece = board[x][y].get();
+            int value = 0;
+            PieceColor color = piece->GetColor();
+            bool isPlayerPiece = (color == playerColor);
+
+            // Ocena pozycji pionków
+            if (piece->GetType() == PieceType::PAWN) {
+                int pawnValue = 10;
+                if (color == PieceColor::WHITE) {
+                    // Bonus za pionki bliżej promocji
+                    value = (7 - y) * 5;
+                } else {
+                    value = y * 5;
                 }
+                score += isPlayerPiece ? value : -value;
+            }
+            
+            // Kara za króla na środku planszy
+            if (piece->GetType() == PieceType::KING) {
+                int centerDanger = 0;
+                int dx = std::abs(x - 3.5);
+                int dy = std::abs(y - 3.5);
+                int distFromCenter = dx + dy;
+                
+                if (distFromCenter < 4) {
+                    centerDanger = (4 - distFromCenter) * 20;
+                }
+                score += isPlayerPiece ? -centerDanger : centerDanger;
             }
         }
     }
-    
+
+    // Bonus za bezpieczeństwo króla
+    int kingSafetyPlayer = EvaluateKingSafety(playerColor);
+    int kingSafetyOpponent = EvaluateKingSafety(
+        (playerColor == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE);
+    score += kingSafetyPlayer - kingSafetyOpponent;
+
     return score;
 }
-
 int Board::GetPieceValue(PieceType type) const {
     static std::map<PieceType, int> values = {
         {PieceType::PAWN, 100},
@@ -657,19 +656,40 @@ int Board::GetPieceValue(PieceType type) const {
     return values[type];
 }
 
+// Board.cpp
 int Board::ScoreMove(const wxPoint& from, const wxPoint& to) const {
     int score = 0;
-    if (Piece* captured = board[to.x][to.y].get()) {
-        score += GetPieceValue(captured->GetType()) * 10;
-        score -= GetPieceValue(board[from.x][from.y]->GetType());
+    
+    // Bonus za atakowanie figur przeciwnika
+    if (board[to.x][to.y]) {
+        score += GetPieceValue(board[to.x][to.y]->GetType()) * 10;
     }
-    if (board[from.x][from.y]->GetType() == PieceType::PAWN && 
-        (to.y == 0 || to.y == 7)) {
-        score += 800; // Promotion bonus
+    
+    // Bonus za ucieczkę przed atakiem
+    if (IsSquareUnderAttack(from, (board[from.x][from.y]->GetColor() == PieceColor::WHITE) ? 
+        PieceColor::BLACK : PieceColor::WHITE)) {
+        score += 50;
     }
+    
+    // Bonus za rozwój figur
+    if (board[from.x][from.y]->GetType() != PieceType::PAWN && 
+        board[from.x][from.y]->GetType() != PieceType::KING) {
+        if (from.y == ((board[from.x][from.y]->GetColor() == PieceColor::WHITE) ? 6 : 1)) {
+            score += 20;
+        }
+    }
+    
+    // Bonus za ruch w kierunku centrum (dla króla)
+    if (board[from.x][from.y]->GetType() == PieceType::KING) {
+        int fromDist = std::abs(from.x - 3.5) + std::abs(from.y - 3.5);
+        int toDist = std::abs(to.x - 3.5) + std::abs(to.y - 3.5);
+        if (toDist > fromDist) {
+            score += 30; // Bonus za oddalenie od centrum
+        }
+    }
+    
     return score;
 }
-
 void Board::StartSearchTimer() {
     searchTimeout = false;
     searchStartTime = std::chrono::steady_clock::now();
@@ -689,126 +709,121 @@ void Board::CheckTime() {
 }
 
 int Board::MinMax(int depth, int alpha, int beta, bool maximizingPlayer) {
-    if (depth == 0 || gameOver) {
+    if (depth == 0 || gameOver || IsTimeOut()) {
         return EvaluateBoard();
-    }
-
-    CheckTime();
-    if (IsTimeOut()) {
-        return maximizingPlayer ? INT_MIN : INT_MAX;
     }
 
     PieceColor currentColor = maximizingPlayer ? playerColor : 
         (playerColor == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
 
-    using ScoredMove = std::pair<wxPoint, wxPoint>;
-    std::vector<std::pair<ScoredMove, int>> scoredMoves;
+    int bestValue = maximizingPlayer ? INT_MIN : INT_MAX;
+    bool foundMove = false;
 
-    // Generuj i oceniaj wszystkie ruchy
+    // Generuj tylko ruchy dla aktualnego koloru
     for (int x = 0; x < 8; x++) {
         for (int y = 0; y < 8; y++) {
             if (board[x][y] && board[x][y]->GetColor() == currentColor) {
                 wxPoint from(x, y);
                 auto moves = board[x][y]->GetPossibleMoves(*this, from);
                 
+                // Sortuj ruchy według oceny
+                std::vector<std::pair<wxPoint, int>> scoredMoves;
                 for (const auto& to : moves) {
                     if (IsMoveLegal(from, to)) {
-                        scoredMoves.push_back({{from, to}, ScoreMove(from, to)});
+                        scoredMoves.push_back({to, ScoreMove(from, to)});
+                    }
+                }
+                std::sort(scoredMoves.begin(), scoredMoves.end(),
+                    [](const auto& a, const auto& b) { return a.second > b.second; });
+                
+                for (const auto& [to, score] : scoredMoves) {
+                    foundMove = true;
+                    MoveState savedState;
+                    GetCurrentState(savedState);
+                    DoMove(from, to);
+
+                    int value = MinMax(depth - 1, alpha, beta, !maximizingPlayer);
+                    
+                    RestoreState(savedState);
+
+                    if (maximizingPlayer) {
+                        if (value > bestValue) bestValue = value;
+                        alpha = std::max(alpha, bestValue);
+                    } else {
+                        if (value < bestValue) bestValue = value;
+                        beta = std::min(beta, bestValue);
+                    }
+
+                    // Przycinanie alfa-beta
+                    if (beta <= alpha) {
+                        return bestValue;
                     }
                 }
             }
         }
     }
 
-    // Sortuj ruchy według oceny (najlepsze na początku)
-    std::sort(scoredMoves.begin(), scoredMoves.end(),
-        [](const auto& a, const auto& b) { return a.second > b.second; });
-
-    int bestValue = maximizingPlayer ? INT_MIN : INT_MAX;
-    bool foundMove = false;
-
-    for (const auto& [move, score] : scoredMoves) {
-        if (IsTimeOut()) break;
-        
-        MoveState savedState;
-        GetCurrentState(savedState);
-        DoMove(move.first, move.second);
-
-        int value = MinMax(depth - 1, alpha, beta, !maximizingPlayer);
-        
-        RestoreState(savedState);
-
-        if (maximizingPlayer) {
-            if (value > bestValue) {
-                bestValue = value;
-            }
-            alpha = std::max(alpha, bestValue);
-        } else {
-            if (value < bestValue) {
-                bestValue = value;
-            }
-            beta = std::min(beta, bestValue);
+    if (!foundMove) {
+        // Brak legalnych ruchów - sprawdź szach/mat
+        if (IsKingInCheck(currentColor)) {
+            return maximizingPlayer ? INT_MIN + 1000 : INT_MAX - 1000;
         }
-
-        // Przycinanie alfa-beta
-        if (beta <= alpha) {
-            break;
-        }
-        foundMove = true;
+        return 0; // Remis
     }
-
-    return foundMove ? bestValue : 
-        (maximizingPlayer ? INT_MIN + 100 : INT_MAX - 100);
+    
+    return bestValue;
 }
-
+// Board.cpp
 std::pair<wxPoint, wxPoint> Board::FindBestMove(int depth) {
     StartSearchTimer();
     int bestValue = INT_MIN;
     std::pair<wxPoint, wxPoint> bestMove = {{-1, -1}, {-1, -1}};
+    int alpha = INT_MIN;
+    int beta = INT_MAX;
 
-    // Generuj wszystkie ruchy na poziomie głównym
-    std::vector<std::pair<std::pair<wxPoint, wxPoint>, int>> scoredRootMoves;
+    // Generuj ruchy przeciwnika (AI)
     for (int x = 0; x < 8; x++) {
         for (int y = 0; y < 8; y++) {
             if (board[x][y] && board[x][y]->GetColor() != playerColor) {
                 wxPoint from(x, y);
                 auto moves = board[x][y]->GetPossibleMoves(*this, from);
+                
+                // Sortuj ruchy według oceny
+                std::vector<std::pair<wxPoint, int>> scoredMoves;
                 for (const auto& to : moves) {
                     if (IsMoveLegal(from, to)) {
-                        scoredRootMoves.push_back({{from, to}, ScoreMove(from, to)});
+                        scoredMoves.push_back({to, ScoreMove(from, to)});
                     }
+                }
+                std::sort(scoredMoves.begin(), scoredMoves.end(),
+                    [](const auto& a, const auto& b) { return a.second > b.second; });
+                
+                for (const auto& [to, score] : scoredMoves) {
+                    if (IsTimeOut()) {
+                        return bestMove;
+                    }
+                    
+                    MoveState savedState;
+                    GetCurrentState(savedState);
+                    DoMove(from, to);
+
+                    int value = MinMax(depth - 1, alpha, beta, false);
+                    
+                    RestoreState(savedState);
+
+                    if (value > bestValue) {
+                        bestValue = value;
+                        bestMove = {from, to};
+                    }
+                    
+                    alpha = std::max(alpha, bestValue);
                 }
             }
         }
     }
 
-    // Sortuj ruchy według oceny
-    std::sort(scoredRootMoves.begin(), scoredRootMoves.end(),
-        [](const auto& a, const auto& b) { return a.second > b.second; });
-
-    // Przeszukuj ruchy w kolejności od najlepszego do najgorszego
-    for (const auto& [move, score] : scoredRootMoves) {
-        if (IsTimeOut()) {
-            break;
-        }
-
-        MoveState savedState;
-        GetCurrentState(savedState);
-        DoMove(move.first, move.second);
-
-        int value = MinMax(depth - 1, INT_MIN, INT_MAX, false);
-
-        RestoreState(savedState);
-
-        if (value > bestValue) {
-            bestValue = value;
-            bestMove = move;
-        }
-    }
-
     return bestMove;
 }
-
 void Board::ComputerMove() {
     if (!gameOver && IsComputerTurn() && promotionSquare.x == -1) {
         auto move = FindBestMove(aiDepth);

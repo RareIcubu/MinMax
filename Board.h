@@ -131,7 +131,7 @@ private:
     // Time management
     std::atomic<bool> searchTimeout{false};
     std::chrono::steady_clock::time_point searchStartTime;
-    int searchTimeLimit = 5000; // 5-second limit
+    int searchTimeLimit = 3000; // 5-second limit
 
     // Move history
     std::stack<MoveState> moveHistory;
