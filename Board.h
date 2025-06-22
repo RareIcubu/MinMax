@@ -3,10 +3,19 @@
 
 #include <wx/wx.h>
 #include <wx/dcbuffer.h>
+#include <wx/msgdlg.h>
 #include <vector>
 #include <memory>
 #include <random>
 #include <stack>
+#include <map>
+#include <climits>
+#include <algorithm>
+#include <unordered_set>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <mutex>
 #include "Piece.h"
 
 class Board : public wxPanel {
@@ -42,11 +51,16 @@ public:
     wxPoint GetKingPosition(PieceColor color) const;
     std::vector<wxPoint> GetCheckingPieces(PieceColor color) const;
     bool IsMoveLegal(wxPoint from, wxPoint to);
+    bool IsComputerTurn() const { return currentTurn != playerColor; }
+    void PromotePawn(wxPoint pos, PieceType promotionType = PieceType::QUEEN);
 
 private:
     void OnPaint(wxPaintEvent& event);
     void OnLeftDown(wxMouseEvent& event);
     void HighlightChecks(wxAutoBufferedPaintDC& dc) const;
+    void DoMove(wxPoint from, wxPoint to);
+    void ComputerMove();
+    void HandlePawnPromotion(wxPoint pos);
     
     struct MoveState {
         std::unique_ptr<Piece> board[8][8];
@@ -61,10 +75,30 @@ private:
         bool whiteRookQMoved;
         bool blackRookKMoved;
         bool blackRookQMoved;
+        wxPoint promotionSquare;
     };
     
     void SaveState();
     void RestoreState(const MoveState& state);
+    void GetCurrentState(MoveState& state) const;
+    
+    std::pair<wxPoint, wxPoint> FindBestMove(int depth);
+    int MinMax(int depth, int alpha, int beta, bool maximizingPlayer);
+    int EvaluateBoard() const;
+    int EvaluateMaterial() const;
+    int EvaluateMobility(PieceColor color) const;
+    int EvaluateKingSafety(PieceColor color) const;
+    int EvaluateCenterControl(PieceColor color) const;
+    int EvaluatePawnStructure(PieceColor color) const;
+    
+    // Time management functions
+    void StartSearchTimer();
+    bool IsTimeOut() const;
+    void CheckTime();
+    
+    // Move scoring
+    int ScoreMove(const wxPoint& from, const wxPoint& to) const;
+    int GetPieceValue(PieceType type) const;
 
     wxSize tileSize = wxSize(60, 60);
     std::unique_ptr<Piece> board[8][8];
@@ -73,6 +107,7 @@ private:
     PieceColor playerColor = PieceColor::WHITE;
     std::vector<wxPoint> possibleMoves;
     wxPoint enPassantTarget = wxPoint(-1, -1);
+    wxPoint promotionSquare = wxPoint(-1, -1);
 
     // King positions for quick access
     wxPoint whiteKingPos = wxPoint(4, 7);
@@ -89,6 +124,14 @@ private:
     bool whiteRookQMoved = false;
     bool blackRookKMoved = false;
     bool blackRookQMoved = false;
+
+    // AI settings
+    int aiDepth = 4;
+
+    // Time management
+    std::atomic<bool> searchTimeout{false};
+    std::chrono::steady_clock::time_point searchStartTime;
+    int searchTimeLimit = 5000; // 5-second limit
 
     // Move history
     std::stack<MoveState> moveHistory;

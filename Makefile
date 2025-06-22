@@ -5,11 +5,11 @@ CXX = g++
 TARGET = chess
 WXCONFIG = wx-config
 
-CFLAGS = $(shell $(WXCONFIG) --cxxflags)
-LIBS = $(shell $(WXCONFIG) --libs)
+CFLAGS = $(shell $(WXCONFIG) --cxxflags) -std=c++17 -pthread
+LIBS = $(shell $(WXCONFIG) --libs) -pthread
 
 all:
-	$(CXX) -o $(TARGET) $(SRCS) $(CFLAGS) $(LIBS) -std=c++17
+	$(CXX) -o $(TARGET) $(SRCS) $(CFLAGS) $(LIBS)
 
 clean:
 	rm -f $(TARGET)

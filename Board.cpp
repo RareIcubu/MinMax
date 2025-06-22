@@ -3,10 +3,18 @@
 #include "Pawn.h"
 #include "King.h"
 #include "Rook.h"
+#include "Queen.h"
+#include "Knight.h"
+#include "Bishop.h"
 #include <wx/dcbuffer.h>
 #include <wx/msgdlg.h>
 #include <algorithm>
 #include <random>
+#include <map>
+#include <climits>
+#include <cmath>
+#include <unordered_set>
+#include <chrono>
 
 wxBEGIN_EVENT_TABLE(Board, wxPanel)
     EVT_PAINT(Board::OnPaint)
@@ -16,6 +24,12 @@ wxEND_EVENT_TABLE()
 Board::Board(wxWindow* parent) : wxPanel(parent) {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     InitNewGame();
+    
+    wxTheApp->CallAfter([this]() {
+        if (IsComputerTurn()) {
+            ComputerMove();
+        }
+    });
 }
 
 bool Board::IsEmpty(int x, int y) const {
@@ -184,6 +198,12 @@ bool Board::HasLegalMoves(PieceColor color) {
 bool Board::IsMoveLegal(wxPoint from, wxPoint to) {
     if (!board[from.x][from.y]) return false;
     
+    // Early exit for invalid moves
+    if (board[to.x][to.y] && 
+        board[to.x][to.y]->GetColor() == board[from.x][from.y]->GetColor()) {
+        return false;
+    }
+    
     PieceType movedType = board[from.x][from.y]->GetType();
     PieceColor movedColor = board[from.x][from.y]->GetColor();
     bool isEnPassant = (movedType == PieceType::PAWN && to == enPassantTarget);
@@ -274,6 +294,7 @@ void Board::SaveState() {
     state.whiteRookQMoved = whiteRookQMoved;
     state.blackRookKMoved = blackRookKMoved;
     state.blackRookQMoved = blackRookQMoved;
+    state.promotionSquare = promotionSquare;
     
     moveHistory.push(std::move(state));
 }
@@ -303,16 +324,516 @@ void Board::RestoreState(const MoveState& state) {
     whiteRookQMoved = state.whiteRookQMoved;
     blackRookKMoved = state.blackRookKMoved;
     blackRookQMoved = state.blackRookQMoved;
+    promotionSquare = state.promotionSquare;
     
     possibleMoves.clear();
     gameOver = false;
     gameResult = "";
 }
 
-void Board::UndoLastMove() {
-    if (moveHistory.size() <= 1) return; // Keep initial state
+void Board::GetCurrentState(MoveState& state) const {
+    for (int x = 0; x < 8; ++x) {
+        for (int y = 0; y < 8; ++y) {
+            if (board[x][y]) {
+                state.board[x][y] = PieceFactory::CreatePiece(
+                    board[x][y]->GetType(), 
+                    board[x][y]->GetColor()
+                );
+            } else {
+                state.board[x][y].reset();
+            }
+        }
+    }
     
-    moveHistory.pop(); // Remove current state
+    state.selectedPiece = selectedPiece;
+    state.currentTurn = currentTurn;
+    state.enPassantTarget = enPassantTarget;
+    state.whiteKingPos = whiteKingPos;
+    state.blackKingPos = blackKingPos;
+    state.whiteKingMoved = whiteKingMoved;
+    state.blackKingMoved = blackKingMoved;
+    state.whiteRookKMoved = whiteRookKMoved;
+    state.whiteRookQMoved = whiteRookQMoved;
+    state.blackRookKMoved = blackRookKMoved;
+    state.blackRookQMoved = blackRookQMoved;
+    state.promotionSquare = promotionSquare;
+}
+
+void Board::DoMove(wxPoint from, wxPoint to) {
+    PieceType movedType = board[from.x][from.y]->GetType();
+    PieceColor movedColor = board[from.x][from.y]->GetColor();
+    
+    if (movedType == PieceType::PAWN && to == enPassantTarget) {
+        int captureY = (movedColor == PieceColor::WHITE) ? to.y + 1 : to.y - 1;
+        board[to.x][captureY].reset();
+    }
+    
+    if (movedType == PieceType::KING) {
+        int deltaX = to.x - from.x;
+        
+        if (deltaX == 2) {
+            board[5][to.y] = std::move(board[7][to.y]);
+            board[7][to.y].reset();
+            SetRookMoved(7, to.y);
+        }
+        else if (deltaX == -2) {
+            board[3][to.y] = std::move(board[0][to.y]);
+            board[0][to.y].reset();
+            SetRookMoved(0, to.y);
+        }
+        SetKingMoved(movedColor);
+        
+        if (movedColor == PieceColor::WHITE) {
+            whiteKingPos = to;
+        } else {
+            blackKingPos = to;
+        }
+    }
+    
+    if (movedType == PieceType::ROOK) {
+        SetRookMoved(from.x, from.y);
+    }
+    
+    if (movedType == PieceType::PAWN && abs(to.y - from.y) == 2) {
+        int epY = (from.y + to.y) / 2;
+        enPassantTarget = wxPoint(to.x, epY);
+    } else {
+        enPassantTarget = wxPoint(-1, -1);
+    }
+    
+    board[to.x][to.y] = std::move(board[from.x][from.y]);
+    
+    // Sprawdź promocję pionka
+    if (movedType == PieceType::PAWN && (to.y == 0 || to.y == 7)) {
+        promotionSquare = to;
+        HandlePawnPromotion(to);
+    }
+    
+    currentTurn = (currentTurn == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
+}
+
+void Board::PromotePawn(wxPoint pos, PieceType promotionType) {
+    if (board[pos.x][pos.y] && board[pos.x][pos.y]->GetType() == PieceType::PAWN) {
+        PieceColor color = board[pos.x][pos.y]->GetColor();
+        board[pos.x][pos.y] = PieceFactory::CreatePiece(promotionType, color);
+    }
+    promotionSquare = wxPoint(-1, -1);
+}
+
+void Board::HandlePawnPromotion(wxPoint pos) {
+    // Dla AI zawsze promuj do hetmana
+    if (IsComputerTurn()) {
+        PromotePawn(pos, PieceType::QUEEN);
+    }
+    // Dla gracza pokaż okno dialogowe (do zaimplementowania)
+    else {
+        // W tej wersji zawsze promuj do hetmana
+        PromotePawn(pos, PieceType::QUEEN);
+    }
+}
+
+int Board::EvaluateMaterial() const {
+    int score = 0;
+    std::map<PieceType, int> pieceValues = {
+        {PieceType::PAWN, 100},
+        {PieceType::KNIGHT, 320},
+        {PieceType::BISHOP, 330},
+        {PieceType::ROOK, 500},
+        {PieceType::QUEEN, 900},
+        {PieceType::KING, 20000}
+    };
+
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            if (board[x][y]) {
+                Piece* piece = board[x][y].get();
+                int value = pieceValues[piece->GetType()];
+                if (piece->GetColor() == playerColor) {
+                    score += value;
+                } else {
+                    score -= value;
+                }
+            }
+        }
+    }
+    return score;
+}
+
+int Board::EvaluateMobility(PieceColor color) const {
+    int mobility = 0;
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            if (board[x][y] && board[x][y]->GetColor() == color) {
+                auto moves = board[x][y]->GetPossibleMoves(*this, wxPoint(x, y));
+                mobility += moves.size();
+            }
+        }
+    }
+    return mobility;
+}
+
+int Board::EvaluateKingSafety(PieceColor color) const {
+    int safety = 0;
+    wxPoint kingPos = GetKingPosition(color);
+    
+    // Kara za brak roszady
+    if (color == PieceColor::WHITE && !whiteKingMoved) {
+        safety -= 20;
+    }
+    if (color == PieceColor::BLACK && !blackKingMoved) {
+        safety -= 20;
+    }
+    
+    // Bonus za bezpieczne pozycje króla
+    if (color == PieceColor::WHITE) {
+        if (kingPos.y == 7 && kingPos.x == 4) safety += 10;
+        if (kingPos.y == 7 && (kingPos.x == 6 || kingPos.x == 2)) safety += 5;
+    } else {
+        if (kingPos.y == 0 && kingPos.x == 4) safety += 10;
+        if (kingPos.y == 0 && (kingPos.x == 6 || kingPos.x == 2)) safety += 5;
+    }
+    
+    // Kara za szach
+    if (IsKingInCheck(color)) {
+        safety -= 50;
+    }
+    
+    return safety;
+}
+
+int Board::EvaluateCenterControl(PieceColor color) const {
+    int control = 0;
+    const std::vector<wxPoint> centerSquares = {{3,3}, {3,4}, {4,3}, {4,4}};
+    
+    for (const auto& square : centerSquares) {
+        if (IsSquareUnderAttack(square, color)) {
+            control += 5;
+        }
+    }
+    
+    // Bonus za figury w centrum
+    for (int x = 2; x <= 5; x++) {
+        for (int y = 2; y <= 5; y++) {
+            if (board[x][y] && board[x][y]->GetColor() == color) {
+                if (board[x][y]->GetType() != PieceType::KING) {
+                    control += 3;
+                }
+            }
+        }
+    }
+    
+    return control;
+}
+
+int Board::EvaluatePawnStructure(PieceColor color) const {
+    int structure = 0;
+    int doubledPawns = 0;
+    int isolatedPawns = 0;
+    int passedPawns = 0;
+    
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            if (board[x][y] && board[x][y]->GetType() == PieceType::PAWN && 
+                board[x][y]->GetColor() == color) {
+                
+                // Sprawdź podwójne pionki
+                for (int y2 = 0; y2 < 8; y2++) {
+                    if (y2 != y && board[x][y2] && board[x][y2]->GetType() == PieceType::PAWN && 
+                        board[x][y2]->GetColor() == color) {
+                        doubledPawns++;
+                    }
+                }
+                
+                // Sprawdź izolowane pionki
+                bool hasNeighbor = false;
+                for (int dx = -1; dx <= 1; dx += 2) {
+                    if (x + dx >= 0 && x + dx < 8) {
+                        for (int y2 = 0; y2 < 8; y2++) {
+                            if (board[x+dx][y2] && board[x+dx][y2]->GetType() == PieceType::PAWN && 
+                                board[x+dx][y2]->GetColor() == color) {
+                                hasNeighbor = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!hasNeighbor) isolatedPawns++;
+                
+                // Sprawdź przechodnie pionki
+                bool isPassed = true;
+                int direction = (color == PieceColor::WHITE) ? -1 : 1;
+                int startY = (color == PieceColor::WHITE) ? y - 1 : y + 1;
+                int endY = (color == PieceColor::WHITE) ? 0 : 7;
+                
+                for (int y2 = startY; y2 != endY; y2 += direction) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (x + dx >= 0 && x + dx < 8) {
+                            if (board[x+dx][y2] && board[x+dx][y2]->GetType() == PieceType::PAWN && 
+                                board[x+dx][y2]->GetColor() != color) {
+                                isPassed = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!isPassed) break;
+                }
+                
+                if (isPassed) passedPawns++;
+            }
+        }
+    }
+    
+    structure -= doubledPawns * 10;
+    structure -= isolatedPawns * 15;
+    structure += passedPawns * 20;
+    return structure;
+}
+
+int Board::EvaluateBoard() const {
+    int score = EvaluateMaterial();
+    
+    // Ocena mobilności
+    int mobilityWhite = EvaluateMobility(PieceColor::WHITE);
+    int mobilityBlack = EvaluateMobility(PieceColor::BLACK);
+    if (playerColor == PieceColor::WHITE) {
+        score += mobilityWhite - mobilityBlack;
+    } else {
+        score += mobilityBlack - mobilityWhite;
+    }
+    
+    // Ocena bezpieczeństwa króla
+    int kingSafetyWhite = EvaluateKingSafety(PieceColor::WHITE);
+    int kingSafetyBlack = EvaluateKingSafety(PieceColor::BLACK);
+    if (playerColor == PieceColor::WHITE) {
+        score += kingSafetyWhite - kingSafetyBlack;
+    } else {
+        score += kingSafetyBlack - kingSafetyWhite;
+    }
+    
+    // Ocena kontroli centrum
+    int centerControlWhite = EvaluateCenterControl(PieceColor::WHITE);
+    int centerControlBlack = EvaluateCenterControl(PieceColor::BLACK);
+    if (playerColor == PieceColor::WHITE) {
+        score += centerControlWhite - centerControlBlack;
+    } else {
+        score += centerControlBlack - centerControlWhite;
+    }
+    
+    // Ocena struktury pionków
+    int pawnStructureWhite = EvaluatePawnStructure(PieceColor::WHITE);
+    int pawnStructureBlack = EvaluatePawnStructure(PieceColor::BLACK);
+    if (playerColor == PieceColor::WHITE) {
+        score += pawnStructureWhite - pawnStructureBlack;
+    } else {
+        score += pawnStructureBlack - pawnStructureWhite;
+    }
+    
+    // Bonus za aktywne figury
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            if (board[x][y] && board[x][y]->GetColor() == playerColor) {
+                PieceType type = board[x][y]->GetType();
+                if (type != PieceType::PAWN && type != PieceType::KING) {
+                    if (y < 4 || y > 3) {
+                        score += 5;
+                    }
+                }
+            }
+        }
+    }
+    
+    return score;
+}
+
+int Board::GetPieceValue(PieceType type) const {
+    static std::map<PieceType, int> values = {
+        {PieceType::PAWN, 100},
+        {PieceType::KNIGHT, 320},
+        {PieceType::BISHOP, 330},
+        {PieceType::ROOK, 500},
+        {PieceType::QUEEN, 900},
+        {PieceType::KING, 20000}
+    };
+    return values[type];
+}
+
+int Board::ScoreMove(const wxPoint& from, const wxPoint& to) const {
+    int score = 0;
+    if (Piece* captured = board[to.x][to.y].get()) {
+        score += GetPieceValue(captured->GetType()) * 10;
+        score -= GetPieceValue(board[from.x][from.y]->GetType());
+    }
+    if (board[from.x][from.y]->GetType() == PieceType::PAWN && 
+        (to.y == 0 || to.y == 7)) {
+        score += 800; // Promotion bonus
+    }
+    return score;
+}
+
+void Board::StartSearchTimer() {
+    searchTimeout = false;
+    searchStartTime = std::chrono::steady_clock::now();
+}
+
+bool Board::IsTimeOut() const {
+    if (searchTimeout) return true;
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - searchStartTime);
+    return elapsed.count() > searchTimeLimit;
+}
+
+void Board::CheckTime() {
+    if (IsTimeOut()) {
+        searchTimeout = true;
+    }
+}
+
+int Board::MinMax(int depth, int alpha, int beta, bool maximizingPlayer) {
+    if (depth == 0 || gameOver) {
+        return EvaluateBoard();
+    }
+
+    CheckTime();
+    if (IsTimeOut()) {
+        return maximizingPlayer ? INT_MIN : INT_MAX;
+    }
+
+    PieceColor currentColor = maximizingPlayer ? playerColor : 
+        (playerColor == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
+
+    using ScoredMove = std::pair<wxPoint, wxPoint>;
+    std::vector<std::pair<ScoredMove, int>> scoredMoves;
+
+    // Generuj i oceniaj wszystkie ruchy
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            if (board[x][y] && board[x][y]->GetColor() == currentColor) {
+                wxPoint from(x, y);
+                auto moves = board[x][y]->GetPossibleMoves(*this, from);
+                
+                for (const auto& to : moves) {
+                    if (IsMoveLegal(from, to)) {
+                        scoredMoves.push_back({{from, to}, ScoreMove(from, to)});
+                    }
+                }
+            }
+        }
+    }
+
+    // Sortuj ruchy według oceny (najlepsze na początku)
+    std::sort(scoredMoves.begin(), scoredMoves.end(),
+        [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    int bestValue = maximizingPlayer ? INT_MIN : INT_MAX;
+    bool foundMove = false;
+
+    for (const auto& [move, score] : scoredMoves) {
+        if (IsTimeOut()) break;
+        
+        MoveState savedState;
+        GetCurrentState(savedState);
+        DoMove(move.first, move.second);
+
+        int value = MinMax(depth - 1, alpha, beta, !maximizingPlayer);
+        
+        RestoreState(savedState);
+
+        if (maximizingPlayer) {
+            if (value > bestValue) {
+                bestValue = value;
+            }
+            alpha = std::max(alpha, bestValue);
+        } else {
+            if (value < bestValue) {
+                bestValue = value;
+            }
+            beta = std::min(beta, bestValue);
+        }
+
+        // Przycinanie alfa-beta
+        if (beta <= alpha) {
+            break;
+        }
+        foundMove = true;
+    }
+
+    return foundMove ? bestValue : 
+        (maximizingPlayer ? INT_MIN + 100 : INT_MAX - 100);
+}
+
+std::pair<wxPoint, wxPoint> Board::FindBestMove(int depth) {
+    StartSearchTimer();
+    int bestValue = INT_MIN;
+    std::pair<wxPoint, wxPoint> bestMove = {{-1, -1}, {-1, -1}};
+
+    // Generuj wszystkie ruchy na poziomie głównym
+    std::vector<std::pair<std::pair<wxPoint, wxPoint>, int>> scoredRootMoves;
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            if (board[x][y] && board[x][y]->GetColor() != playerColor) {
+                wxPoint from(x, y);
+                auto moves = board[x][y]->GetPossibleMoves(*this, from);
+                for (const auto& to : moves) {
+                    if (IsMoveLegal(from, to)) {
+                        scoredRootMoves.push_back({{from, to}, ScoreMove(from, to)});
+                    }
+                }
+            }
+        }
+    }
+
+    // Sortuj ruchy według oceny
+    std::sort(scoredRootMoves.begin(), scoredRootMoves.end(),
+        [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    // Przeszukuj ruchy w kolejności od najlepszego do najgorszego
+    for (const auto& [move, score] : scoredRootMoves) {
+        if (IsTimeOut()) {
+            break;
+        }
+
+        MoveState savedState;
+        GetCurrentState(savedState);
+        DoMove(move.first, move.second);
+
+        int value = MinMax(depth - 1, INT_MIN, INT_MAX, false);
+
+        RestoreState(savedState);
+
+        if (value > bestValue) {
+            bestValue = value;
+            bestMove = move;
+        }
+    }
+
+    return bestMove;
+}
+
+void Board::ComputerMove() {
+    if (!gameOver && IsComputerTurn() && promotionSquare.x == -1) {
+        auto move = FindBestMove(aiDepth);
+        if (move.first.x != -1) {
+            SaveState();
+            DoMove(move.first, move.second);
+
+            // Sprawdź stan gry po ruchu
+            PieceColor opponent = (currentTurn == PieceColor::WHITE) ? 
+                PieceColor::BLACK : PieceColor::WHITE;
+                
+            if (IsCheckmate(opponent)) {
+                ShowGameOverDialog("Checkmate! " + wxString(opponent == PieceColor::WHITE ? "White" : "Black") + " wins!");
+            } else if (IsStalemate(opponent)) {
+                ShowGameOverDialog("Stalemate! Game drawn!");
+            }
+        }
+        Refresh();
+    }
+}
+
+void Board::UndoLastMove() {
+    if (moveHistory.size() <= 1) return;
+    
+    moveHistory.pop();
     RestoreState(moveHistory.top());
     Refresh();
 }
@@ -354,7 +875,7 @@ void Board::InitNewGame() {
     blackKingPos = wxPoint(4, 0);
     gameOver = false;
     gameResult = "";
-    playerColor = PieceColor::WHITE;
+    promotionSquare = wxPoint(-1, -1);
     
     while (!moveHistory.empty()) {
         moveHistory.pop();
@@ -424,6 +945,15 @@ void Board::OnPaint(wxPaintEvent& event) {
 
     HighlightChecks(dc);
 
+    // Podświetl pole promocji
+    if (promotionSquare.x != -1) {
+        wxRect promoRect(promotionSquare.x * tileSize.x, promotionSquare.y * tileSize.y,
+                         tileSize.x, tileSize.y);
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        dc.SetPen(wxPen(*wxBLUE, 4));
+        dc.DrawRectangle(promoRect);
+    }
+
     if (gameOver) {
         dc.SetFont(wxFont(20, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD));
         dc.SetTextForeground(*wxBLUE);
@@ -436,6 +966,30 @@ void Board::OnPaint(wxPaintEvent& event) {
 
 void Board::OnLeftDown(wxMouseEvent& event) {
     if (gameOver) return;
+
+    // Jeśli trwa promocja, obsłuż wybór figury
+    if (promotionSquare.x != -1) {
+        wxPoint clickPos = event.GetPosition();
+        int x = clickPos.x / tileSize.x;
+        int y = clickPos.y / tileSize.y;
+        
+        if (x >= 0 && x < 8 && y >= 0 && y < 8) {
+            // Dla uproszczenia zawsze promuj do hetmana
+            PromotePawn(promotionSquare, PieceType::QUEEN);
+            Refresh();
+            
+            // Po promocji sprawdź stan gry
+            PieceColor opponent = (currentTurn == PieceColor::WHITE) ? 
+                PieceColor::BLACK : PieceColor::WHITE;
+                
+            if (IsCheckmate(opponent)) {
+                ShowGameOverDialog("Checkmate! " + wxString(currentTurn == PieceColor::WHITE ? "White" : "Black") + " wins!");
+            } else if (IsStalemate(opponent)) {
+                ShowGameOverDialog("Stalemate! Game drawn!");
+            }
+        }
+        return;
+    }
 
     wxPoint clickPos = event.GetPosition();
     int x = clickPos.x / tileSize.x;
@@ -462,52 +1016,12 @@ void Board::OnLeftDown(wxMouseEvent& event) {
         auto it = std::find(possibleMoves.begin(), possibleMoves.end(), dest);
         if (it != possibleMoves.end()) {
             SaveState();
+            DoMove(selectedPiece, dest);
             
-            PieceType movedType = board[selectedPiece.x][selectedPiece.y]->GetType();
-            PieceColor movedColor = board[selectedPiece.x][selectedPiece.y]->GetColor();
-            
-            if (movedType == PieceType::PAWN && dest == enPassantTarget) {
-                int captureY = (movedColor == PieceColor::WHITE) ? dest.y + 1 : dest.y - 1;
-                board[dest.x][captureY].reset();
-            }
-            
-            if (movedType == PieceType::KING) {
-                int deltaX = dest.x - selectedPiece.x;
+            PieceColor movedColor = board[dest.x][dest.y]->GetColor();
+            PieceColor opponent = (movedColor == PieceColor::WHITE) ? 
+                PieceColor::BLACK : PieceColor::WHITE;
                 
-                if (deltaX == 2) {
-                    board[5][dest.y] = std::move(board[7][dest.y]);
-                    board[7][dest.y].reset();
-                    SetRookMoved(7, dest.y);
-                }
-                else if (deltaX == -2) {
-                    board[3][dest.y] = std::move(board[0][dest.y]);
-                    board[0][dest.y].reset();
-                    SetRookMoved(0, dest.y);
-                }
-                SetKingMoved(movedColor);
-                
-                if (movedColor == PieceColor::WHITE) {
-                    whiteKingPos = dest;
-                } else {
-                    blackKingPos = dest;
-                }
-            }
-            
-            if (movedType == PieceType::ROOK) {
-                SetRookMoved(selectedPiece.x, selectedPiece.y);
-            }
-            
-            if (movedType == PieceType::PAWN && abs(dest.y - selectedPiece.y) == 2) {
-                int epY = (selectedPiece.y + dest.y) / 2;
-                enPassantTarget = wxPoint(dest.x, epY);
-            } else {
-                enPassantTarget = wxPoint(-1, -1);
-            }
-            
-            board[dest.x][dest.y] = std::move(board[selectedPiece.x][selectedPiece.y]);
-            currentTurn = (currentTurn == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
-            
-            PieceColor opponent = (movedColor == PieceColor::WHITE) ? PieceColor::BLACK : PieceColor::WHITE;
             if (IsCheckmate(opponent)) {
                 ShowGameOverDialog("Checkmate! " + wxString(movedColor == PieceColor::WHITE ? "White" : "Black") + " wins!");
             } else if (IsStalemate(opponent)) {
@@ -516,6 +1030,10 @@ void Board::OnLeftDown(wxMouseEvent& event) {
         } 
         selectedPiece = wxPoint(-1, -1);
         possibleMoves.clear();
-    }   
+    }
+    
     Refresh();
+    if (!gameOver && IsComputerTurn() && promotionSquare.x == -1) {
+        ComputerMove();
+    }
 }

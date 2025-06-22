@@ -19,12 +19,13 @@ std::vector<wxPoint> Rook::GetPossibleMoves(const Board& board, wxPoint pos) con
         while (true) {
             p.x += d.x; p.y += d.y;
             if (!board.IsInsideBoard(p)) break;
-            auto *piece = board.GetPieceAt(p);
-            if (!piece) {
+            
+            if (board.IsEmpty(p.x, p.y)) {
                 moves.push_back(p);
             } else {
-                if (piece->GetColor() != GetColor())
+                if (board.IsEnemy(p.x, p.y, GetColor())) {
                     moves.push_back(p);
+                }
                 break;
             }
         }

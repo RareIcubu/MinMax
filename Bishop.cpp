@@ -1,4 +1,3 @@
-
 #include "Bishop.h"
 #include "Board.h"
 
@@ -24,16 +23,15 @@ std::vector<wxPoint> Bishop::GetPossibleMoves(const Board& board, wxPoint pos) c
             p.y += dir.y;
             if (!board.IsInsideBoard(p)) break;
 
-            auto* piece = board.GetPieceAt(p);
-            if (!piece) {
+            if (board.IsEmpty(p.x, p.y)) {
                 moves.push_back(p);
             } else {
-                if (piece->GetColor() != GetColor())  // use GetColor() here instead of 'color'
+                if (board.IsEnemy(p.x, p.y, GetColor())) {
                     moves.push_back(p);
+                }
                 break;
             }
         }
     }
     return moves;
 }
-

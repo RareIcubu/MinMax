@@ -25,12 +25,12 @@ std::vector<wxPoint> Queen::GetPossibleMoves(const Board& board, wxPoint pos) co
             p.y += dir.y;
             if (!board.IsInsideBoard(p)) break;
 
-            auto* piece = board.GetPieceAt(p);
-            if (!piece) {
+            if (board.IsEmpty(p.x, p.y)) {
                 moves.push_back(p);
             } else {
-                if (piece->GetColor() != color)
+                if (board.IsEnemy(p.x, p.y, GetColor())) {
                     moves.push_back(p);
+                }
                 break;
             }
         }
